@@ -1,0 +1,433 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+//@version=6
+strategy("Golden swing with HL", shorttitle="Pivots HL", overlay=true, max_labels_count=500)
+
+onlyPermitAlternateDots = input.bool(true, title="only Permit Alternate Dots or HL")
+
+var devTooltip          = "Deviation is a multiplier that affects how much the price should deviate from the previous pivot in order for the bar to become a impulse move."
+pips_threshold = input.float(title="Pips threshold", defval=60, minval=0, tooltip=devTooltip)
+
+retracementTolerance = 100 / input.float(70.0, "Retracement Tolerance (%)", minval=0, maxval=100) 
+// Custom function for calculating price deviation for validating large moves
+calc_dev(base_price, price) => 100 * (price - base_price) / price
+
+neck_line_color = input(title="Neck Line", defval=color.black, inline="NeckLine", group="Necck line color")
+
+// User input for minimum body percentage
+var momTooltip = "This is the minimum percentage of the body that is required in order to be a momentum candle"
+minBodyPercentage = input.float(0.3, "Minimum Body Percentage", minval=0.1, maxval=0.9, tooltip=momTooltip)
+
+lengthGroupTitle = "LENGTH LEFT / RIGHT"
+colorGroupTitle = "Text Color / Label Color"
+leftLenH = input.int(title="Pivot High", defval=10, minval=1, inline="Pivot High", group=lengthGroupTitle)
+rightLenH = input.int(title="/", defval=10, minval=1, inline="Pivot High", group=lengthGroupTitle)
+textColorH = input(title="Pivot High", defval=color.black, inline="Pivot High", group=colorGroupTitle)
+labelColorH = input(title="", defval=color.red, inline="Pivot High", group=colorGroupTitle)
+
+leftLenL = input.int(title="Pivot Low", defval=10, minval=1, inline="Pivot Low", group=lengthGroupTitle)
+rightLenL = input.int(title="/", defval=10, minval=1, inline="Pivot Low", group=lengthGroupTitle)
+textColorL = input(title="Pivot Low", defval=color.black, inline="Pivot Low", group=colorGroupTitle)
+labelColorL = input(title="", defval=color.blue, inline="Pivot Low", group=colorGroupTitle)
+
+ph = ta.pivothigh(leftLenH, rightLenH)
+pl = ta.pivotlow(leftLenL, rightLenL)
+
+var int revPivot_side = 0
+type PrevPivotSide
+    int value
+
+var prev_pivot_side = PrevPivotSide.new(0)
+
+
+reverse                 = input.bool(title="Reverse", defval=false, tooltip="Flips the fibonacci levels around.")
+extendLeft              = input.bool(title="Extend Left    |    Extend Right", defval=false, inline="Extend Lines")
+extendRight             = input.bool(title="", defval=false, inline="Extend Lines")
+levels                  = input.bool(title="Show Levels", defval=true, inline="Levels")
+levelsFormat            = input.string(title="", defval="Values", options=["Values", "Percent"], inline="Levels")
+labelsPosition          = input.string(title="Labels Position", defval="Left", options=["Left", "Right"])
+backgroundTransparency  = input.int(title="Background Transparency", defval=85, minval=0, maxval=100)
+
+
+
+
+
+// Check extending parameter
+var extending = extend.none
+if extendLeft and extendRight
+    extending := extend.both
+if extendLeft and not extendRight
+    extending := extend.left
+if not extendLeft and extendRight
+    extending := extend.right
+
+
+
+type Pivot
+    float _price
+    int _time
+    bool _bullish
+
+var pivots = array.new<Pivot>()
+
+type Pattern
+    bool isFound 
+    Pivot A
+    Pivot B
+    Pivot C
+    Pivot D
+    float neck_line
+    line neck_line_id
+    bool _bullish
+
+var Pattern pattern = Pattern.new(isFound = false)
+
+
+// Function to get pivots between two timestamps (with the end time being the current time)
+getPivotsBetween(startTime, endTime) =>
+    // Create filtered array to store pivots within the timeframe
+    var filteredPivots = array.new<Pivot>()
+    
+    // Get the size of the pivots array
+    int size = array.size(pivots)
+    
+    // Clear the array (important to avoid accumulating values from previous calls)
+    array.clear(filteredPivots)
+    
+    // Start from the most recent pivot (last in array)
+    int idx = size - 1
+    
+    // Traverse backwards until we reach a pivot before startTime or until we check all pivots
+    while idx >= 0
+        pivot = array.get(pivots, idx)
+        pivotTime = pivot._time
+        
+        // Check if the pivot time is between our start and end times
+        if pivotTime >= startTime and pivotTime <= endTime
+            array.push(filteredPivots, pivot)
+            
+        // If we've gone earlier than startTime, we can stop
+        if pivotTime < startTime
+            break
+            
+        // Move to the previous pivot
+        idx := idx - 1
+        
+    // Return the filtered array
+    filteredPivots
+
+
+var bool currentIsMomentum = false
+
+
+var g_fibs = "Fibonacci Levels"
+// //{=============================================================================
+// // Get Fibonacci level user inputs
+show_0 = input(true, "", inline = "Level0", group=g_fibs)
+value_0 = input(0, "", inline = "Level0", group=g_fibs)
+color_0 = input(#787b86, "", inline = "Level0", group=g_fibs)
+//------------------------------------------------------------------------------
+show_0_236 = input(true, "", inline = "Level0", group=g_fibs)
+value_0_236 = input(0.236, "", inline = "Level0", group=g_fibs)
+color_0_236 = input(#f44336, "", inline = "Level0", group=g_fibs)
+//------------------------------------------------------------------------------
+show_0_382 = input(true, "", inline = "Level1", group=g_fibs)
+value_0_382 = input(0.382, "", inline = "Level1", group=g_fibs)
+color_0_382 = input(#81c784, "", inline = "Level1", group=g_fibs)
+//------------------------------------------------------------------------------
+show_0_5 = input(true, "", inline = "Level1", group=g_fibs)
+value_0_5 = input(0.5, "", inline = "Level1", group=g_fibs)
+color_0_5 = input(#4caf50, "", inline = "Level1", group=g_fibs)
+//------------------------------------------------------------------------------
+show_0_638 = input(false, "", inline = "Level2", group=g_fibs)
+value_0_638 = input(0.638, "", inline = "Level2", group=g_fibs)
+color_0_638 = input(#009688, "", inline = "Level2", group=g_fibs)
+//------------------------------------------------------------------------------
+show_0_786 = input(true, "", inline = "Level2", group=g_fibs)
+value_0_786 = input(0.786, "", inline = "Level2", group=g_fibs)
+color_0_786 = input(#64b5f6, "", inline = "Level2", group=g_fibs)
+//------------------------------------------------------------------------------
+show_1 = input(true, "", inline = "Level3", group=g_fibs)
+value_1 = input(1, "", inline = "Level3", group=g_fibs)
+color_1 = input(#787b86, "", inline = "Level3", group=g_fibs)
+//------------------------------------------------------------------------------
+show_2 = input(false, "", inline = "Level5", group=g_fibs)
+value_2 = input(2, "", inline = "Level5", group=g_fibs)
+color_2 = input(color.rgb(254, 168, 38), "", inline = "Level5", group=g_fibs)
+//------------------------------------------------------------------------------
+show_3 = input(false, "", inline = "Level7", group=g_fibs)
+value_3 = input(3, "", inline = "Level7", group=g_fibs)
+color_3 = input(#9c27b0, "", inline = "Level7", group=g_fibs)
+
+
+
+drawDiamond(_offset, _pivot, _color, _side) =>
+    
+    if not na(_pivot) and (not onlyPermitAlternateDots or (onlyPermitAlternateDots and not (prev_pivot_side.value ==  _side))  )
+        prev_pivot_side.value := _side
+        if _side > 0 
+            cur_pivot = Pivot.new(ph,time[rightLenH],true)
+            array.push(pivots,cur_pivot)
+            
+        else
+            cur_pivot = Pivot.new(pl,time[rightLenL],false)
+            array.push(pivots,cur_pivot)
+        // Empty string for text; using label.style_diamond to get a diamond shape.
+        label.new(bar_index[_offset], _pivot + (syminfo.mintick *_side *20), "", style=label.style_diamond, size=5 ,color=_color, textcolor=color.new(_color,60))
+
+// Draw diamond shapes for pivot high and pivot low
+drawDiamond(rightLenH, ph, labelColorH,1 )
+drawDiamond(rightLenL, pl, labelColorL,-1)
+
+
+
+// Momentum candle detection function
+isMomentumCandle(offset) =>
+    o = open[offset]
+    c = close[offset]
+    h = high[offset]
+    l = low[offset]
+    
+    bodySize = math.abs(c - o)
+    candleRange = h - l
+    upperWick = h - math.max(o, c)
+    lowerWick = math.min(o, c) - l
+    
+    maxWickPercentage = 1 - minBodyPercentage
+    
+    valid = candleRange > 0
+    bodyRatio = valid ? bodySize / candleRange : 0
+    upperWickRatio = valid ? upperWick / candleRange : 1
+    lowerWickRatio = valid ? lowerWick / candleRange : 1
+    
+    result = bodyRatio >= minBodyPercentage and
+             upperWickRatio <= maxWickPercentage and
+             lowerWickRatio <= maxWickPercentage and
+             valid
+    
+    result
+
+//-------------------------------
+//find candle with ll or hh to update neck_line
+findNeckLine(int _time, float price, int side) =>
+    result = price  // Default return value is the original price
+    
+    if side > 0  // Bullish case - look for higher high
+        for i = 0 to 100  // Look back up to 100 bars
+            if time[i] < _time  // If we found a bar with time less than the target time
+                if high[i] > price  // Looking for a higher high
+                    result := high[i]  // Update result to this higher high
+                    break  // Exit the loop once found
+    else  // Bearish case - look for lower low
+        for i = 0 to 100  // Look back up to 100 bars
+            if time[i] < _time  // If we found a bar with time less than the target time
+                if low[i] < price  // Looking for a lower low
+                    result := low[i]  // Update result to this lower low
+                    break  // Exit the loop once found
+    result    
+
+//-----------------------------------
+calculatePips(price1, price2) =>
+    // Handle invalid prices
+    if na(price1) or na(price2)
+        na
+    
+    // Calculate absolute price difference
+    priceDiff = math.abs(price1 - price2)
+    
+    // Determine pip value based on symbol type
+    pipValue = switch syminfo.type
+        "forex"     => syminfo.mintick * 10      // Forex: 1 pip = 10 ticks (e.g., 0.0001 → 0.001)
+        "crypto"    => 1.0                       // Crypto: 1 pip = 1 unit (e.g., BTCUSD: 50000 → 50001 = 1 pip)
+        "index"     => syminfo.mintick * 1        // Indices: Use 1 tick (e.g., SPX: 1.0)
+        "stock"     => syminfo.mintick * 1        // Stocks: Use 1 tick (e.g., AAPL: 0.01)
+        => syminfo.mintick * 10                   // Default for other markets
+    
+    // Avoid division by zero
+    pipValue := pipValue <= 0 ? na : pipValue
+    
+    // Calculate pips
+    priceDiff / pipValue
+
+draw_label(price, txt, txtColor, lineLast) =>
+    x = line.get_x1(lineLast)
+    labelStyle = label.style_label_right
+    align = text.align_right 
+    var id = label.new(x=x, y=price, text=txt, textcolor=txtColor, style=labelStyle, textalign=align, color=#00000000)
+ 
+
+// Return the formatted label text for Fibonacci levels
+label_txt(level) =>
+    l = str.tostring(level) 
+
+draw_fibonacci_levels(_startPrice, _endPrice, _startTime, _endTime) =>
+    // Determine if it's a High→Low or Low→High move
+    iHL  = _startPrice > _endPrice
+    diff = (iHL ? 1.0 : -1.0) * math.abs(_startPrice - _endPrice)
+    
+    // Our desired Fib multipliers
+    fib0 = _startPrice + diff * (value_0 -1)
+    fib_0_236 = _startPrice + diff * (value_0_236  - 1)
+    fib_0_382 = _startPrice + diff * (value_0_382 -1)
+    fib3   = _startPrice + diff * (3.0 - 1)
+    fib2   = _startPrice + diff * (2.0 - 1)
+    fib1   = _startPrice + diff * (1.0 - 1 )
+    fib0638 = _startPrice + diff * (0.638 - 1 )
+    // Draw lines for each level (from _startTime to _endTime)
+    line line0 = na
+    line line_0_236 = na
+    line line_0_382 = na
+    line3   = line.new(_startTime, fib3,   _endTime, fib3,   xloc.bar_time, extend=extending, color=color.gray, width=2)
+    line2   = line.new(_startTime, fib2,   _endTime, fib2,   xloc.bar_time, extend=extending, color=color.gray, width=2)
+    line1   = line.new(_startTime, fib1,   _endTime, fib1,   xloc.bar_time, extend=extending, color=color.gray, width=2)
+    line0638= line.new(_startTime, fib0638,_endTime, fib0638,xloc.bar_time, extend=extending, color=color.gray, width=2)
+    if(show_0)
+        line0 := line.new(_startTime, fib0,_endTime, fib0 ,xloc.bar_time, extend=extending, color=color_0, width=2)
+        //draw_label(fib0,label_txt(value_0),color_0,line0)
+    if(show_0_236)
+        line_0_236 := line.new(_startTime, fib_0_236,_endTime, fib_0_236 ,xloc.bar_time, extend=extending, color=color_0_236, width=2)
+    if(show_0_382)
+        line_0_382 := line.new(_startTime, fib_0_382,_endTime, fib_0_382 ,xloc.bar_time, extend=extending, color=color_0_382, width=2)
+
+    // Fill the zones between these lines
+    linefill.new(line2, line3,   color=color.new(color.red,   backgroundTransparency))  // between 2.0 and 3.0
+    linefill.new(line1, line2,   color=color.new(color.orange, backgroundTransparency))  // between 1.0 and 2.0
+    linefill.new(line0638, line1, color=color.new(color.gray,    backgroundTransparency)) // between 0.638 and 1.0
+    if(show_0 and show_0_236)
+        linefill.new(line0, line_0_236, color=color.new(color_0,    backgroundTransparency)) // between 0 and  0.638
+    if(show_0_236 and show_0_382 )
+        linefill.new(line_0_236, line_0_382, color=color.new(color_0_382,    backgroundTransparency)) // between 0 and  0.638
+
+
+
+
+
+var int pivots_size = -1
+if barstate.ishistory
+    currentIsMomentum := false
+    if pattern.isFound == true
+        currentIsMomentum := isMomentumCandle(0)
+        if currentIsMomentum and pattern._bullish and open[0] < close[0]
+            currentIsMomentum := false
+            if close[0] > pattern.neck_line
+                currentIsMomentum := true
+
+                // validate the pattern
+                cur_time  = time[0]
+                bool isInvalidPattern = false
+
+                //only allow less than 3 pivots after the pattern founds
+                pivots_after_pattern = getPivotsBetween(pattern.D._time,cur_time)
+                if(pivots_after_pattern.size() >= 4)
+                    isInvalidPattern := true
+
+                // If new HH/LL gets created pattern gets invalid
+                for p in pivots_after_pattern 
+                    if(p._price < pattern.D._price)
+                        isInvalidPattern := true
+                if(not isInvalidPattern)
+                    //draw_fibonacci_levels:: Call the function to draw Fibonacci levels
+                    log.info("_")
+                    draw_fibonacci_levels(close[0], pattern.D._price, pattern.B._time,time[0] )
+                
+                pattern.isFound := false
+                pattern.neck_line := na
+
+            else if close[0] <= pattern.neck_line and high[0] > pattern.neck_line
+                currentIsMomentum := true
+                pattern.neck_line := findNeckLine(pattern.C._time, high[0], 1)
+                line.set_y1(pattern.neck_line_id, close[0])
+                line.set_y2(pattern.neck_line_id, close[0])
+                log.info("---------------------  updated necline  --------------")
+                pattern.isFound := false
+            
+        else if currentIsMomentum and (not pattern._bullish) and open[0] > close[0]
+            currentIsMomentum := false
+            if close[0] < pattern.neck_line
+                currentIsMomentum := true
+                log.info("_")                
+                cur_time  = time[0]
+                bool isInvalidPattern = false
+
+                //only allow less than 3 pivots after the pattern founds
+                pivots_after_pattern = getPivotsBetween(pattern.D._time,cur_time)
+                log.info("size:" + str.tostring(pivots_after_pattern.size()))
+                if(pivots_after_pattern.size() >= 4)
+                    isInvalidPattern := true
+
+                // If new HH/LL gets created pattern gets invalid
+                for p in pivots_after_pattern 
+                    if(p._price > pattern.D._price)
+                        isInvalidPattern := true
+                if(not isInvalidPattern)
+                    draw_fibonacci_levels(close[0], pattern.D._price, pattern.B._time,time[0] )
+                pattern.isFound := false
+                pattern.neck_line := na
+            else if close[0] >= pattern.neck_line and low[0] < pattern.neck_line
+                currentIsMomentum := true
+                pattern.neck_line := findNeckLine(pattern.C._time, low[0], -1)
+                line.set_y1(pattern.neck_line_id, close[0])
+                line.set_y2(pattern.neck_line_id, close[0])
+                log.info("----------------Updated necline--------------")
+                //pattern.found = false
+        else
+            currentIsMomentum := false
+    if pivots.size() > 3 and  pivots.size() != pivots_size
+        pivots_size := pivots.size()
+        
+        int size = pivots.size() -1
+        Pivot A = array.get(pivots, size - 3)
+        Pivot B = array.get(pivots, size - 2)
+        Pivot C = array.get(pivots, size - 1)
+        Pivot D = array.get(pivots, size - 0)
+
+        // look for pattern requirements
+
+        if  B._bullish == C._bullish or C._bullish == D._bullish
+            na
+        else
+            AB = calculatePips(A._price, B._price)
+            BC = calculatePips(B._price, C._price)
+            CD = calculatePips(C._price, D._price)
+
+            if math.abs(AB) >= pips_threshold
+
+                // Price move is significant - create a new line between the pivot points
+                lineId = line.new(A._time, A._price, B._time, B._price, xloc=xloc.bar_time,color=color.gray, width=1, style=line.style_dashed)
+                log.info("AB " + str.tostring(AB) + "  BC" + str.tostring(BC) + "  CD" + str.tostring(str.tostring(CD)))
+
+                _bullish_pattern = A._price > B._price
+                if _bullish_pattern
+                    line.set_color(lineId, color.green)
+                else
+                    line.set_color(lineId, color.red)
+                
+                // Check if retracements <= tolerance
+                
+                if BC < AB/(retracementTolerance) and CD < AB/(retracementTolerance)  and ((_bullish_pattern and B._price > D._price) or (not _bullish_pattern and B._price < D._price))
+                    // draw pattern legs
+                    pattern := Pattern.new(true,A,B,C,D,C._price,na,_bullish_pattern)
+                    // draw pattern area
+                    box.new(left = B._time, top = C._price, right = D._time, border_width=0, bottom = D._price, border_color = color.green,  xloc = xloc.bar_time, bgcolor = color.new(color.green,80))
+
+                    //draw initial neck line
+                    float initial_neckline_price = C._price
+                    for i = 0 to 100
+                        if time[i]  > D._time 
+                            
+                            if _bullish_pattern and initial_neckline_price < high[i]
+                                initial_neckline_price := findNeckLine(C._time, high[i], 1)
+                            else if not _bullish_pattern and initial_neckline_price > low[i]
+                                initial_neckline_price := findNeckLine(C._time, low[i], -1)
+                                log.info('updated neck line at ')
+                    pattern.neck_line := initial_neckline_price
+                    //draw neck_line
+                    neck_line_id = line.new(B._time, pattern.neck_line, D._time, pattern.neck_line, xloc=xloc.bar_time, color= color.new(neck_line_color,50) , width=8, style = line.style_solid)
+                    pattern.neck_line_id :=  neck_line_id
+
+// Visual feedback
+plotshape(series = currentIsMomentum , 
+             title="Momentum Candle",
+             style=shape.circle,
+             color=color.new(color.yellow, 10),
+             size = size.tiny,
+             location=location.belowbar)
